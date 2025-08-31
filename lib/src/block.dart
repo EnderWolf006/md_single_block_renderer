@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'package:markdown/markdown.dart' as md;
+import 'math_syntax.dart';
+import 'footnote_syntax.dart';
 import 'package:flutter/foundation.dart';
 
 /// Represents one leaf block extracted from the markdown AST.
@@ -37,6 +39,8 @@ class Block {
   final List<List<BlockInlineNode>>?
   tableCells; // for table_row blocks: each cell's inline nodes
   final String? math; // for block math (between $$ $$)
+  final String? footnoteId; // for footnote definition or reference
+  final bool isFootnoteDefinition;
 
   const Block({
     required this.id,
@@ -49,6 +53,8 @@ class Block {
     this.meta,
     this.tableCells,
     this.math,
+    this.footnoteId,
+    this.isFootnoteDefinition = false,
   });
 
   @override
@@ -58,46 +64,13 @@ class Block {
 
 /// Convert markdown string into list of leaf [Block]s.
 List<Block> markdownToBlocks(String markdownSource) {
-  // Preprocess block math ($$...$$)
-  const placeholderPrefix = '§§MATHBLOCK§§';
-  final lines = markdownSource.split('\n');
-  final mathBlocks = <String>[]; // store raw math content
-  final processed = <String>[];
-  for (int i = 0; i < lines.length; i++) {
-    final line = lines[i];
-    final trimmed = line.trim();
-    // Multi-line block math start/stop lines containing only $$
-    if (trimmed == r'$$') {
-      final buffer = <String>[];
-      i++;
-      while (i < lines.length) {
-        final inner = lines[i];
-        if (inner.trim() == r'$$') {
-          break;
-        }
-        buffer.add(inner);
-        i++;
-      }
-      final content = buffer.join('\n').trim();
-      final id = mathBlocks.length;
-      mathBlocks.add(content);
-      processed.add('$placeholderPrefix$id');
-      continue;
-    } else if (trimmed.length > 4 &&
-        trimmed.startsWith(r'$$') &&
-        trimmed.endsWith(r'$$')) {
-      // Single-line $$...$$
-      final content = trimmed.substring(2, trimmed.length - 2).trim();
-      final id = mathBlocks.length;
-      mathBlocks.add(content);
-      processed.add('$placeholderPrefix$id');
-      continue;
-    }
-    processed.add(line);
-  }
-  final preprocessedSource = processed.join('\n');
-  final doc = md.Document(encodeHtml: false, extensionSet: md.ExtensionSet.gitHubWeb);
-  final nodes = doc.parseLines(preprocessedSource.split('\n'));
+  final doc = md.Document(
+    encodeHtml: false,
+    extensionSet: md.ExtensionSet.gitHubWeb,
+    inlineSyntaxes: [MathInlineSyntax(), FootnoteRefSyntax()],
+    blockSyntaxes: const [MathBlockSyntax(), FootnoteBlockSyntax()],
+  );
+  final nodes = doc.parseLines(markdownSource.split('\n'));
   final blocks = <Block>[];
   int autoId = 0;
   final List<int?> _listStack = []; // null for unordered, int counter for ordered
@@ -215,6 +188,51 @@ List<Block> markdownToBlocks(String markdownSource) {
         return;
       }
 
+      // Direct math block emitted by syntax
+      if (tag == 'math_block') {
+        blocks.add(
+          Block(
+            id: 'b${autoId++}',
+            path: newPath,
+            blockTag: 'math_block',
+            inlines: const [],
+            rawCode: null,
+            codeLanguage: null,
+            isCodeBlock: false,
+            math: node.textContent.trim(),
+            footnoteId: null,
+            isFootnoteDefinition: false,
+          ),
+        );
+        return;
+      }
+      if (tag == 'footnote_def') {
+        final idElem = (node.children ?? []).whereType<md.Element>().firstWhere(
+          (e) => e.tag == 'id',
+          orElse: () => md.Element.text('id', ''),
+        );
+        final id = idElem.textContent;
+        final textContent =
+            node.children?.whereType<md.Text>().map((e) => e.text).join('\n') ?? '';
+        // Parse inner content as markdown to inline nodes
+        final fakeParagraph = md.Element('p', [md.Text(textContent)]);
+        final inlineNodes = _extractInlineNodes(fakeParagraph);
+        blocks.add(
+          Block(
+            id: 'b${autoId++}',
+            path: newPath,
+            blockTag: 'footnote_def',
+            inlines: inlineNodes,
+            rawCode: null,
+            codeLanguage: null,
+            isCodeBlock: false,
+            math: null,
+            footnoteId: id,
+            isFootnoteDefinition: true,
+          ),
+        );
+        return;
+      }
       final hasBlockChildren = children.any((c) => c is md.Element && _isBlockTag(c.tag));
       if (!hasBlockChildren && _isBlockTag(tag)) {
         if (tag == 'pre') {
@@ -232,6 +250,8 @@ List<Block> markdownToBlocks(String markdownSource) {
               codeLanguage: codeEl.attributes['class']?.replaceFirst('language-', ''),
               isCodeBlock: true,
               math: null,
+              footnoteId: null,
+              isFootnoteDefinition: false,
             ),
           );
         } else if (tag == 'hr') {
@@ -245,33 +265,13 @@ List<Block> markdownToBlocks(String markdownSource) {
               codeLanguage: null,
               isCodeBlock: false,
               math: null,
+              footnoteId: null,
+              isFootnoteDefinition: false,
             ),
           );
         } else {
           final inlineNodes = _extractInlineNodes(node);
-          // Detect placeholder only paragraph -> math block
-          if (inlineNodes.length == 1 && inlineNodes.first.type == 'text') {
-            final txt = inlineNodes.first.text?.trim() ?? '';
-            if (txt.startsWith(placeholderPrefix)) {
-              final idxStr = txt.substring(placeholderPrefix.length);
-              final idx = int.tryParse(idxStr);
-              if (idx != null && idx >= 0 && idx < mathBlocks.length) {
-                blocks.add(
-                  Block(
-                    id: 'b${autoId++}',
-                    path: newPath,
-                    blockTag: 'math_block',
-                    inlines: const [],
-                    rawCode: null,
-                    codeLanguage: null,
-                    isCodeBlock: false,
-                    math: mathBlocks[idx],
-                  ),
-                );
-                return; // done
-              }
-            }
-          }
+          // (legacy placeholder-based math detection removed)
           blocks.add(
             Block(
               id: 'b${autoId++}',
@@ -282,6 +282,8 @@ List<Block> markdownToBlocks(String markdownSource) {
               codeLanguage: null,
               isCodeBlock: false,
               math: null,
+              footnoteId: null,
+              isFootnoteDefinition: false,
             ),
           );
         }
@@ -301,6 +303,8 @@ List<Block> markdownToBlocks(String markdownSource) {
             codeLanguage: null,
             isCodeBlock: false,
             math: null,
+            footnoteId: null,
+            isFootnoteDefinition: false,
           ),
         );
       }
@@ -332,6 +336,8 @@ List<Map<String, Object?>> _blocksToJson(List<Block> blocks) => blocks
           'tableCells': b.tableCells!
               .map((cell) => cell.map(_inlineToJson).toList())
               .toList(),
+        if (b.footnoteId != null) 'footnoteId': b.footnoteId,
+        if (b.isFootnoteDefinition) 'footDef': true,
       },
     )
     .toList();
@@ -377,6 +383,8 @@ Block _blockFromJson(Map<String, Object?> m) => Block(
       )
       .toList(),
   math: m['math'] as String?,
+  footnoteId: m['footnoteId'] as String?,
+  isFootnoteDefinition: (m['footDef'] as bool?) ?? false,
 );
 
 /// Top-level entry for compute (must be a top-level or static function).
@@ -427,7 +435,7 @@ List<BlockInlineNode> _extractInlineNodes(md.Element element) {
 
   BlockInlineNode walk(md.Node node) {
     if (node is md.Text) {
-      return BlockInlineNode('text', text: node.text); // will be split later if needed
+      return BlockInlineNode('text', text: node.text);
     }
     if (node is md.Element) {
       final t = node.tag;
@@ -444,6 +452,10 @@ List<BlockInlineNode> _extractInlineNodes(md.Element element) {
           return BlockInlineNode('strong', children: children);
         case 'code':
           return BlockInlineNode('code', text: node.textContent);
+        case 'footnote_ref':
+          return BlockInlineNode('footnote_ref', text: node.textContent);
+        case 'math_inline':
+          return BlockInlineNode('math', text: node.textContent);
         case 'a':
           return BlockInlineNode(
             'link',
@@ -465,14 +477,7 @@ List<BlockInlineNode> _extractInlineNodes(md.Element element) {
   }
 
   final ch = element.children ?? const <md.Node>[];
-  for (final c in ch) {
-    final walked = walk(c);
-    if (walked.type == 'text' && walked.text != null) {
-      result.addAll(_splitInlineMath(walked.text!));
-    } else {
-      result.add(walked);
-    }
-  }
+  for (final c in ch) result.add(walk(c));
   return result;
 }
 
@@ -498,13 +503,10 @@ List<BlockInlineNode> _gatherListItemInline(List<md.Node> children) {
         out.addAll(_extractInlineNodes(n));
       }
     } else if (n is md.Text) {
-      final raw = n.text;
-      final t = raw.trim();
+      final t = n.text.trim();
       if (t.isNotEmpty) {
         sep();
-        for (final seg in _splitInlineMath(t)) {
-          out.add(seg);
-        }
+        out.add(BlockInlineNode('text', text: t));
       }
     }
   }
@@ -513,48 +515,4 @@ List<BlockInlineNode> _gatherListItemInline(List<md.Node> children) {
   return out.isEmpty ? const [BlockInlineNode('text', text: '')] : out;
 }
 
-// Split a plain text into segments with inline math ($...$) while avoiding $$ blocks.
-List<BlockInlineNode> _splitInlineMath(String text) {
-  final out = <BlockInlineNode>[];
-  final buffer = StringBuffer();
-  bool inMath = false;
-  for (int i = 0; i < text.length; i++) {
-    final ch = text[i];
-    if (ch == r'$') {
-      final next = i + 1 < text.length ? text[i + 1] : '';
-      // Ignore if starts/ends with $$ (block) or escaped \$
-      final prev = i > 0 ? text[i - 1] : '';
-      final isEscaped = prev == '\\';
-      if (!isEscaped) {
-        // Double $$ => leave for block (already handled via preprocessing) so treat literally
-        if (next == r'$') {
-          buffer.write(r'$$');
-          i++; // skip next
-          continue;
-        }
-        // Toggle inline math
-        if (inMath) {
-          // close math
-          final content = buffer.toString();
-          out.add(BlockInlineNode('math', text: content));
-          buffer.clear();
-          inMath = false;
-        } else {
-          // flush buffer as text
-          if (buffer.isNotEmpty) {
-            out.add(BlockInlineNode('text', text: buffer.toString()));
-            buffer.clear();
-          }
-          inMath = true;
-        }
-        continue;
-      }
-    }
-    buffer.write(ch);
-  }
-  if (buffer.isNotEmpty) {
-    final leftover = buffer.toString();
-    out.add(BlockInlineNode(inMath ? 'math' : 'text', text: leftover));
-  }
-  return out;
-}
+// inline math handled by Markdown extension syntaxes

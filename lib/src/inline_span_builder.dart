@@ -89,6 +89,21 @@ class InlineSpanBuilder {
             ),
           ),
         );
+      case 'footnote_ref':
+        return WidgetSpan(
+          alignment: PlaceholderAlignment.baseline,
+          baseline: TextBaseline.alphabetic,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 1),
+            child: Text(
+              node.text ?? '',
+              style: ctx.baseStyle.copyWith(
+                fontSize: (ctx.baseStyle.fontSize ?? 14) * 0.65,
+                color: Colors.blueGrey,
+              ),
+            ),
+          ),
+        );
       default:
         return TextSpan(children: node.children.map(_convert).toList());
     }

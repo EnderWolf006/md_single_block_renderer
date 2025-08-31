@@ -97,4 +97,17 @@ void main() {
     final hasMath = p.inlines.any((n) => n.type == 'math');
     expect(hasMath, true);
   });
+
+  test('footnotes definitions and references', () {
+    const source = '''这里有脚注引用[^a]。
+
+[^a]: 脚注内容 第一行
+    缩进第二行''';
+    final blocks = markdownToBlocks(source);
+    final def = blocks.where((b) => b.blockTag == 'footnote_def').toList();
+    expect(def.length, 1);
+    expect(def.first.footnoteId, 'a');
+    final refParagraph = blocks.firstWhere((b) => b.blockTag == 'p');
+    expect(refParagraph.inlines.any((n) => n.type == 'footnote_ref'), true);
+  });
 }

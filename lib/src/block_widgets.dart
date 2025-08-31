@@ -45,6 +45,8 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         return _buildTableRow(context);
       case 'math_block':
         return _buildMathBlock(context);
+      case 'footnote_def':
+        return _buildFootnoteDef(context);
       default:
         return _buildParagraphLike(context);
     }
@@ -212,6 +214,38 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Math.tex(block.math ?? '', mathStyle: MathStyle.display, textStyle: style),
+      ),
+    );
+  }
+
+  Widget _buildFootnoteDef(BuildContext context) {
+    final style = _resolveBaseStyle(context).copyWith(fontSize: 12);
+    final spanBuilder =
+        inlineBuilderOverride ??
+        InlineSpanBuilder(
+          InlineSpanBuilderContext(baseStyle: style, onTapLink: onTapLink),
+        );
+    final span = spanBuilder.build(block.inlines);
+    final label = block.footnoteId ?? '';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 28,
+            child: Text(
+              label,
+              textAlign: TextAlign.right,
+              style: style.copyWith(
+                fontWeight: FontWeight.bold,
+                color: Colors.blueGrey.shade700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(child: Text.rich(span)),
+        ],
       ),
     );
   }
