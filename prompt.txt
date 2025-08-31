@@ -1,0 +1,48 @@
+根据以下思考框架帮我生成代码
+
+<Why>
+因目前的渲染md的库都存在一个问题，
+就是不能分块渲染，每次都一定要build出一整个markdown文档，
+尽管当前视口看不到大部分的文档也要在同一帧完成渲染，导致了Low帧很低。
+那么就需要做一个分块渲染的Markdown Renderer，
+每次只渲染一小部分，就可以大大提高长md文档在小窗口的显示性能
+</Why>
+
+<What>
+使用markdown这个包的ast，
+实现一个名为MarkdownSingleBlockRenderer组件，其参数为Block；
+实现一个markdownToBlocks函数，把markdown字符串转换为List<Block>；
+实现一个Block类，用于定义单个Block信息，你来定义结构。
+实现一个行级组件，用于将Block中的全部行内内容解析为TextSpan/WidgetSpan，然后用Text.rich渲染（解析不要在UI进程做）
+实现N个块级组件，用于把Block渲染为带有背景/点击功能/字体大小/布局的组件
+
+使用者只需要如下伪代码使用：
+
+state:
+  final md = r'''
+  # title
+  > xxxxxx `yyyyy`
+  ''';
+  final blocks = markdownToBlocks(md);
+
+build: 
+  ListView(
+    ...
+    itemBuilder: (context, index) {
+      return MarkdownSingleBlockRenderer(blocks[index])
+    }
+  )
+
+</What>
+
+<How>
+  <Question>
+    怎么把markdown字符串拆成块？
+  </Question>
+  <Answer1>
+    首先使用markdown库中的Document把markdown字符串转换为AST对象列表（列表根节点都是块级标签）。
+    然后递归把AST对象列表展平（因为可能存在嵌套块级标签），把原来的AST树结构转换为List<Block>，
+    List其中每个Block都是原AST树的叶子节点，把该叶子节点的root-to-leaf path（List<Block>）作为属性记录下来。
+  </Answer>
+</How>
+
