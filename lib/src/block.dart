@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:markdown/markdown.dart' as md;
-import 'math_syntax.dart';
-import 'footnote_syntax.dart';
+import 'extension_syntaxes/math_syntax.dart';
+import 'extension_syntaxes/footnote_syntax.dart';
 import 'package:flutter/foundation.dart';
 
 /// Represents one leaf block extracted from the markdown AST.
@@ -159,11 +159,22 @@ List<Block> markdownToBlocks(String markdownSource) {
         int rowIndex = 0;
         for (final tr in rowElements) {
           final cells = <List<BlockInlineNode>>[];
+          final cellAlignments = <String>[]; // left|center|right
           bool isHeaderRow = false;
           for (final cc in tr.children ?? const <md.Node>[]) {
             if (cc is md.Element && (cc.tag == 'td' || cc.tag == 'th')) {
               if (cc.tag == 'th') isHeaderRow = true;
               cells.add(_extractInlineNodes(cc));
+              // Infer alignment from style attribute produced by markdown package (style="text-align: center").
+              final styleAttr = cc.attributes['style'] ?? '';
+              final alignAttr = cc.attributes['align'] ?? '';
+              String align = 'left';
+              final lowered = (styleAttr + ' ' + alignAttr).toLowerCase();
+              if (lowered.contains('center'))
+                align = 'center';
+              else if (lowered.contains('right'))
+                align = 'right';
+              cellAlignments.add(align);
             }
           }
           blocks.add(
@@ -179,6 +190,7 @@ List<Block> markdownToBlocks(String markdownSource) {
                 'isHeader': isHeaderRow,
                 'rowIndex': rowIndex++,
                 'columnCount': cells.length,
+                if (cellAlignments.isNotEmpty) 'cellAlign': cellAlignments,
               },
               tableCells: cells,
               math: null,
@@ -271,12 +283,16 @@ List<Block> markdownToBlocks(String markdownSource) {
           );
         } else {
           final inlineNodes = _extractInlineNodes(node);
-          // (legacy placeholder-based math detection removed)
+          // If this paragraph sits inside a blockquote anywhere in its path, expose it
+          // as a 'blockquote' block so consumers can style it directly without needing
+          // to inspect its ancestors. (Only override simple paragraph leaves.)
+          final insideBlockquote = tag == 'p' && path.any((e) => e.tag == 'blockquote');
+          final effectiveTag = insideBlockquote ? 'blockquote' : tag;
           blocks.add(
             Block(
               id: 'b${autoId++}',
               path: newPath,
-              blockTag: tag,
+              blockTag: effectiveTag,
               inlines: inlineNodes,
               rawCode: null,
               codeLanguage: null,

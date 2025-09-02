@@ -90,6 +90,20 @@ void main() {
     expect(firstBody.tableCells?.length, 2);
   });
 
+  test('table alignment metadata captured', () {
+    const source = '''
+| Left | Center | Right |
+|:-----|:------:|------:|
+| a    | b      | c     |
+''';
+    final blocks = markdownToBlocks(source);
+    final firstRow = blocks.firstWhere((b) => b.blockTag == 'table_row');
+    final align = (firstRow.meta?['cellAlign'] as List?)?.cast<String>();
+    // Alignment should match the header row: left, center, right
+    expect(align, isNotNull);
+    expect(align, ['left', 'center', 'right']);
+  });
+
   test('inline math with \\ce macro preprocesses', () {
     final md = '公式：\$\\ce{Hg^2+ ->[I-] HgI2 ->[I-] [Hg^{II}I4]^2-}\$';
     final blocks = markdownToBlocks(md);

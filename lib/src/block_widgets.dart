@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 import 'block.dart';
 import 'inline_span_builder.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_highlight/themes/atom-one-dark.dart';
+import 'package:flutter_highlight/themes/atom-one-light.dart';
+import 'package:highlight/highlight.dart' as hl;
 
 /// Builds a widget for a single Block.
 class MarkdownSingleBlockRenderer extends StatelessWidget {
@@ -61,7 +65,7 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         );
     final span = spanBuilder.build(block.inlines);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: Text.rich(span),
     );
   }
@@ -78,17 +82,14 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         );
     final span = spanBuilder.build(block.inlines);
     return Padding(
-      padding: EdgeInsets.fromLTRB(level * 2.0 + 4, 12, 8, 4),
+      padding: const EdgeInsets.only(top: 12, bottom: 4),
       child: Text.rich(span),
     );
   }
 
   Widget _buildBlockquote(BuildContext context) {
     // The leaf is likely a paragraph inside blockquote so show indicator.
-    final style = _resolveBaseStyle(context).copyWith(
-      fontStyle: FontStyle.italic,
-      color: Theme.of(context).colorScheme.onSurface.withOpacity(.85),
-    );
+    final style = _resolveBaseStyle(context).copyWith();
     final spanBuilder =
         inlineBuilderOverride ??
         InlineSpanBuilder(
@@ -96,12 +97,13 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         );
     final span = spanBuilder.build(block.inlines);
     return Container(
+      width: double.infinity,
       decoration: BoxDecoration(
-        border: Border(left: BorderSide(color: Colors.grey.shade400, width: 4)),
-        color: Colors.grey.shade100,
+        border: Border(left: BorderSide(color: Colors.grey.withAlpha(80), width: 4)),
+        color: Colors.grey.withAlpha(40),
       ),
-      padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-      margin: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.fromLTRB(12, 8, 0, 8),
+      margin: const EdgeInsets.symmetric(vertical: 12),
       child: Text.rich(span),
     );
   }
@@ -109,32 +111,7 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
   Widget _buildCodeBlock(BuildContext context) {
     final text = block.rawCode ?? '';
     final lang = block.codeLanguage;
-    final style = _resolveBaseStyle(
-      context,
-    ).copyWith(fontFamily: 'monospace', fontSize: 12);
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.85),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (lang != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 4),
-              child: Text(
-                lang,
-                style: style.copyWith(color: Colors.white70, fontSize: 10),
-              ),
-            ),
-          Text(text, style: style.copyWith(color: Colors.white)),
-        ],
-      ),
-    );
+    return _HighlightedCodeBlock(language: lang ?? '', code: text);
   }
 
   Widget _buildListItem(BuildContext context) {
@@ -150,7 +127,7 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
     final order = block.meta?['order'] as int?;
     final bullet = listType == 'ol' ? '${order ?? 1}.' : '\u2022';
     return Padding(
-      padding: EdgeInsets.only(left: 12.0 * depth + 8, right: 8, top: 2, bottom: 2),
+      padding: EdgeInsets.only(left: 12.0 * depth + 8, top: 2, bottom: 2),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -173,24 +150,36 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         InlineSpanBuilder(
           InlineSpanBuilderContext(baseStyle: base, onTapLink: onTapLink),
         );
-    final bg = isHeader
-        ? Theme.of(context).colorScheme.primary.withOpacity(.08)
-        : Colors.transparent;
+    final bg = isHeader ? Colors.grey.withAlpha(40) : Colors.transparent;
+    final borderColor = Colors.grey.withAlpha(80);
+    final cellAlign =
+        (block.meta?['cellAlign'] as List?)?.cast<String>() ??
+        List.filled(cells.length, 'left');
     return Container(
       decoration: BoxDecoration(
         color: bg,
-        border: Border(bottom: BorderSide(color: Colors.grey.shade300)),
+        border: Border(bottom: BorderSide(color: borderColor)),
       ),
-      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+      padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final cell in cells)
+          for (var i = 0; i < cells.length; i++)
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 6),
                 child: Text.rich(
-                  spanBuilder.build(cell),
+                  spanBuilder.build(cells[i]),
+                  textAlign: () {
+                    switch (cellAlign[i]) {
+                      case 'center':
+                        return TextAlign.center;
+                      case 'right':
+                        return TextAlign.end;
+                      default:
+                        return TextAlign.start;
+                    }
+                  }(),
                   style: isHeader ? base.copyWith(fontWeight: FontWeight.bold) : base,
                 ),
               ),
@@ -205,15 +194,22 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.symmetric(vertical: 8),
-      padding: const EdgeInsets.all(8),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.blueGrey.withOpacity(.05),
+        color: Colors.grey.withAlpha(40),
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: Colors.blueGrey.withOpacity(.2)),
+        border: Border.all(color: Colors.grey.withAlpha(80)),
       ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Math.tex(block.math ?? '', mathStyle: MathStyle.display, textStyle: style),
+      child: Align(
+        alignment: Alignment.center,
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Math.tex(
+            block.math ?? '',
+            mathStyle: MathStyle.display,
+            textStyle: style,
+          ),
+        ),
       ),
     );
   }
@@ -227,8 +223,9 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         );
     final span = spanBuilder.build(block.inlines);
     final label = block.footnoteId ?? '';
+    final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 8),
+      padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -239,12 +236,177 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
               textAlign: TextAlign.right,
               style: style.copyWith(
                 fontWeight: FontWeight.bold,
-                color: Colors.blueGrey.shade700,
+                color: theme.colorScheme.onSurface.withOpacity(.7),
               ),
             ),
           ),
           const SizedBox(width: 6),
           Expanded(child: Text.rich(span)),
+        ],
+      ),
+    );
+  }
+}
+
+class _HighlightedCodeBlock extends StatefulWidget {
+  final String language;
+  final String code;
+  const _HighlightedCodeBlock({required this.language, required this.code});
+  @override
+  State<_HighlightedCodeBlock> createState() => _HighlightedCodeBlockState();
+}
+
+class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
+  late List<hl.Node> _nodes;
+  bool _copied = false;
+  String langLabel = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _parse();
+  }
+
+  @override
+  void didUpdateWidget(covariant _HighlightedCodeBlock oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.code != widget.code || oldWidget.language != widget.language) {
+      _parse();
+    }
+  }
+
+  void _parse() {
+    final rawLang = widget.language.trim();
+    final lang = _normalizeLang(rawLang);
+    langLabel = lang;
+    try {
+      final res = hl.highlight.parse(
+        widget.code.trimRight(),
+        language: (lang.isEmpty) ? null : lang,
+      );
+      _nodes = res.nodes ?? const [];
+    } catch (e) {
+      // Any parsing exception -> treat as plain text to avoid crashes.
+      _nodes = [hl.Node(value: widget.code)];
+    }
+  }
+
+  String _normalizeLang(String input) {
+    final l = input.toLowerCase();
+    switch (l) {
+      case 'js':
+        return 'javascript';
+      case 'ts':
+        return 'typescript';
+      case 'py':
+        return 'python';
+      case 'c++':
+        return 'cpp';
+      case 'sh':
+        return 'bash';
+      case 'md':
+      case 'markdown':
+        return 'markdown';
+      case 'yml':
+        return 'yaml';
+      default:
+        return l.isEmpty ? 'plaintext' : l;
+    }
+  }
+
+  List<TextSpan> _toTextSpans(List<hl.Node> nodes, Map<String, TextStyle> theme) {
+    final spans = <TextSpan>[];
+    for (final n in nodes) {
+      if (n.value != null) {
+        final style = n.className != null ? theme[n.className!] : null;
+        spans.add(TextSpan(text: n.value, style: style));
+      } else if (n.children != null) {
+        final style = n.className != null ? theme[n.className!] : null;
+        spans.add(TextSpan(style: style, children: _toTextSpans(n.children!, theme)));
+      }
+    }
+    return spans;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final themeMap = isDark ? atomOneDarkTheme : atomOneLightTheme;
+    final codeStyle = TextStyle(
+      fontFamilyFallback: const [
+        'MapleMono',
+        'Menlo',
+        'Consolas',
+        'Roboto Mono',
+        'Courier New',
+        'monospace',
+      ],
+      fontSize: 13,
+      height: 1.4,
+      color: (isDark ? Colors.white : Colors.black87),
+    );
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 8),
+      decoration: BoxDecoration(
+        color: Colors.grey.withAlpha(40),
+        border: Border.all(color: Colors.grey.withAlpha(80)),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 6, 4, 2),
+            child: Row(
+              children: [
+                Expanded(
+                  child: SelectionContainer.disabled(
+                    child: Text(
+                      langLabel.isEmpty
+                          ? ''
+                          : langLabel[0].toUpperCase() + langLabel.substring(1),
+                      style: codeStyle.copyWith(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        height: 1,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: _copied ? 'Copied' : 'Copy',
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: widget.code));
+                    if (mounted) {
+                      setState(() => _copied = true);
+                      Future.delayed(const Duration(milliseconds: 1500), () {
+                        if (mounted) setState(() => _copied = false);
+                      });
+                    }
+                  },
+                  icon: Icon(_copied ? Icons.check : Icons.copy, size: 14),
+                  padding: const EdgeInsets.all(4),
+                  constraints: const BoxConstraints(),
+                  color: codeStyle.color,
+                  splashRadius: 14,
+                ),
+              ],
+            ),
+          ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            primary: false,
+            
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+            child: Text.rich(
+              TextSpan(style: codeStyle, children: _toTextSpans(_nodes, themeMap)),
+            ),
+          ),
         ],
       ),
     );

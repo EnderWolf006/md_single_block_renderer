@@ -37,15 +37,24 @@ class InlineSpanBuilder {
         return WidgetSpan(
           alignment: PlaceholderAlignment.middle,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+            margin: const EdgeInsets.symmetric(horizontal: 4),
             decoration: BoxDecoration(
-              color: Colors.grey.shade200,
+              color: Colors.grey.withAlpha(40),
+              border: Border.all(color: Colors.grey.withAlpha(80)),
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
               node.text ?? '',
               style: ctx.baseStyle.copyWith(
-                fontFamily: 'monospace',
+                fontFamilyFallback: [
+                  'MapleMono',
+                  'Menlo',
+                  'Consolas',
+                  'Roboto Mono',
+                  'Courier New',
+                  'monospace',
+                ],
                 fontSize: ctx.baseStyle.fontSize != null
                     ? (ctx.baseStyle.fontSize! * 0.9)
                     : null,
@@ -56,9 +65,8 @@ class InlineSpanBuilder {
       case 'link':
         final url = node.data?['href'] as String?;
         return TextSpan(
-          style: const TextStyle(
-            color: Colors.blue,
-            decoration: TextDecoration.underline,
+          style: ctx.baseStyle.merge(
+            const TextStyle(color: Colors.blue, decoration: TextDecoration.underline),
           ),
           recognizer: url == null
               ? null
@@ -70,7 +78,9 @@ class InlineSpanBuilder {
         );
       case 'del':
         return TextSpan(
-          style: const TextStyle(decoration: TextDecoration.lineThrough),
+          style: ctx.baseStyle.merge(
+            const TextStyle(decoration: TextDecoration.lineThrough),
+          ),
           children: node.children.map(_convert).toList(),
         );
       case 'math':
@@ -85,7 +95,9 @@ class InlineSpanBuilder {
             textStyle: ctx.baseStyle,
             onErrorFallback: (err) => Text(
               err.message,
-              style: ctx.baseStyle.copyWith(color: Colors.red, fontSize: 11),
+              style: ctx.baseStyle.merge(
+                const TextStyle(color: Colors.red, fontSize: 11),
+              ),
             ),
           ),
         );
@@ -97,9 +109,11 @@ class InlineSpanBuilder {
             padding: const EdgeInsets.symmetric(horizontal: 1),
             child: Text(
               node.text ?? '',
-              style: ctx.baseStyle.copyWith(
-                fontSize: (ctx.baseStyle.fontSize ?? 14) * 0.65,
-                color: Colors.blueGrey,
+              style: ctx.baseStyle.merge(
+                TextStyle(
+                  fontSize: (ctx.baseStyle.fontSize ?? 14) * 0.65,
+                  color: Colors.blueGrey,
+                ),
               ),
             ),
           ),
