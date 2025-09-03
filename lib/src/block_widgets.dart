@@ -5,7 +5,10 @@ import 'package:flutter_math_fork/flutter_math.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_highlight/themes/atom-one-dark.dart';
 import 'package:flutter_highlight/themes/atom-one-light.dart';
-import 'package:highlight/highlight.dart' as hl;
+import 'block.dart' show CodeToken; // ensure CodeToken visible
+import 'sync_scroll_manager.dart';
+import 'code_width_manager.dart';
+import 'no_overscroll_physics.dart';
 
 /// Builds a widget for a single Block.
 class MarkdownSingleBlockRenderer extends StatelessWidget {
@@ -111,7 +114,25 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
   Widget _buildCodeBlock(BuildContext context) {
     final text = block.rawCode ?? '';
     final lang = block.codeLanguage;
-    return _HighlightedCodeBlock(language: lang ?? '', code: text);
+
+    // Check if this is part of a grouped code block
+    final isFirstInGroup = block.meta?['isFirstInGroup'] == true;
+    final isLastInGroup = block.meta?['isLastInGroup'] == true;
+    final isMiddleInGroup = block.meta?['isMiddleInGroup'] == true;
+
+    return _HighlightedCodeBlock(
+      language: lang ?? '',
+      code: text,
+      tokens: block.codeTokens,
+      showHeader: isFirstInGroup,
+      showTopRounding: isFirstInGroup,
+      showBottomRounding: isLastInGroup,
+      isMiddleBlock: isMiddleInGroup,
+      fullCodeContent: block.meta?['fullCodeContent'] as String?,
+      groupId: block.meta?['codeBlockGroupId'] as String?,
+      groupIndex: block.meta?['blockIndex'] as int?,
+      precomputedLongestLine: block.meta?['fullCodeLongestLine'] as String?,
+    );
   }
 
   Widget _buildListItem(BuildContext context) {
@@ -150,7 +171,7 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         InlineSpanBuilder(
           InlineSpanBuilderContext(baseStyle: base, onTapLink: onTapLink),
         );
-    final bg = isHeader ? Colors.grey.withAlpha(40) : Colors.transparent;
+    final bg = isHeader ? Colors.grey.withValues(alpha: 0.16) : Colors.transparent;
     final borderColor = Colors.grey.withAlpha(80);
     final cellAlign =
         (block.meta?['cellAlign'] as List?)?.cast<String>() ??
@@ -248,47 +269,70 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
   }
 }
 
+// Fallback minimal theme maps if flutter_highlight themes not found in environment.
+const _fallbackLightTheme = <String, TextStyle>{};
+const _fallbackDarkTheme = <String, TextStyle>{};
+
 class _HighlightedCodeBlock extends StatefulWidget {
   final String language;
   final String code;
-  const _HighlightedCodeBlock({required this.language, required this.code});
+  final List<CodeToken>? tokens; // precomputed
+  final bool showHeader;
+  final bool showTopRounding;
+  final bool showBottomRounding;
+  final bool isMiddleBlock;
+  final String? fullCodeContent; // Full code content for copy functionality
+  final String? groupId; // code block group id for scroll sync
+  final int? groupIndex; // index inside group (for key stability)
+  final String? precomputedLongestLine;
+
+  const _HighlightedCodeBlock({
+    required this.language,
+    required this.code,
+    this.tokens,
+    this.showHeader = true,
+    this.showTopRounding = true,
+    this.showBottomRounding = true,
+    this.isMiddleBlock = false,
+    this.fullCodeContent,
+    this.groupId,
+    this.groupIndex,
+    this.precomputedLongestLine,
+  });
+
   @override
   State<_HighlightedCodeBlock> createState() => _HighlightedCodeBlockState();
 }
 
 class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
-  late List<hl.Node> _nodes;
+  late List<CodeToken> _tokens;
   bool _copied = false;
   String langLabel = '';
+  ScrollController? _hController; // horizontal scroll controller
+  double? _groupLineWidth; // cached unified width
+  bool _measured = false;
 
   @override
   void initState() {
     super.initState();
-    _parse();
+    _initTokens();
+    _maybeInitScrollSync();
   }
 
-  @override
-  void didUpdateWidget(covariant _HighlightedCodeBlock oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.code != widget.code || oldWidget.language != widget.language) {
-      _parse();
-    }
+  void _maybeInitScrollSync() {
+    if (widget.groupId == null) return;
+    _hController = ScrollController();
+    // Register with sync manager after first frame to ensure hasClients
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      SyncScrollManager.instance.register(widget.groupId!, _hController!);
+    });
   }
 
-  void _parse() {
+  void _initTokens() {
     final rawLang = widget.language.trim();
-    final lang = _normalizeLang(rawLang);
-    langLabel = lang;
-    try {
-      final res = hl.highlight.parse(
-        widget.code.trimRight(),
-        language: (lang.isEmpty) ? null : lang,
-      );
-      _nodes = res.nodes ?? const [];
-    } catch (e) {
-      // Any parsing exception -> treat as plain text to avoid crashes.
-      _nodes = [hl.Node(value: widget.code)];
-    }
+    langLabel = _normalizeLang(rawLang);
+    _tokens = widget.tokens ?? [CodeToken(widget.code, null)];
   }
 
   String _normalizeLang(String input) {
@@ -314,24 +358,119 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
     }
   }
 
-  List<TextSpan> _toTextSpans(List<hl.Node> nodes, Map<String, TextStyle> theme) {
-    final spans = <TextSpan>[];
-    for (final n in nodes) {
-      if (n.value != null) {
-        final style = n.className != null ? theme[n.className!] : null;
-        spans.add(TextSpan(text: n.value, style: style));
-      } else if (n.children != null) {
-        final style = n.className != null ? theme[n.className!] : null;
-        spans.add(TextSpan(style: style, children: _toTextSpans(n.children!, theme)));
+  List<TextSpan> _tokensToSpans(List<CodeToken> tokens, Map<String, TextStyle> theme) {
+    return tokens
+        .map(
+          (t) => TextSpan(
+            text: t.text,
+            style: t.className != null ? theme[t.className!] : null,
+          ),
+        )
+        .toList();
+  }
+
+  void _measureIfNeeded(TextStyle codeStyle) {
+    if (_measured) return;
+    final groupId = widget.groupId;
+    if (groupId == null) return;
+    final existing = CodeWidthManager.instance.getGroupWidth(groupId);
+    if (existing != null) {
+      _groupLineWidth = existing;
+      _measured = true;
+      return;
+    }
+    final longest = widget.precomputedLongestLine;
+    if (longest == null) {
+      _measured = true; // nothing to do
+      return;
+    }
+    // Defer actual layout cost to post-frame to avoid blocking first paint
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final tp = TextPainter(textDirection: TextDirection.ltr, maxLines: 1);
+      tp.text = TextSpan(text: longest.isEmpty ? ' ' : longest, style: codeStyle);
+      tp.layout();
+      final w = tp.width;
+      if (CodeWidthManager.instance.updateWidth(groupId, w)) {
+        if (mounted) {
+          setState(() {
+            _groupLineWidth = w;
+            _measured = true;
+          });
+        }
+      } else {
+        _groupLineWidth = CodeWidthManager.instance.getGroupWidth(groupId);
+        _measured = true;
+      }
+    });
+  }
+
+  void _ensureSynced() {
+    final gid = widget.groupId;
+    if (gid == null) return;
+    final ctrl = _hController;
+    if (ctrl == null || !ctrl.hasClients) return;
+    final cached = SyncScrollManager.instance.cachedOffset(gid);
+    if (cached != null && (ctrl.offset - cached).abs() > 0.5) {
+      // jumpTo to avoid animation
+      ctrl.jumpTo(cached.clamp(0.0, ctrl.position.maxScrollExtent));
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _HighlightedCodeBlock oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.code != widget.code ||
+        oldWidget.language != widget.language ||
+        oldWidget.tokens != widget.tokens) {
+      _initTokens();
+    }
+    if (oldWidget.groupId != widget.groupId) {
+      // group changed: unregister old, register new
+      if (oldWidget.groupId != null && _hController != null) {
+        SyncScrollManager.instance.unregister(oldWidget.groupId!, _hController!);
+      }
+      if (widget.groupId != null) {
+        _hController ??= ScrollController();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          SyncScrollManager.instance.register(widget.groupId!, _hController!);
+        });
       }
     }
-    return spans;
+    // Always attempt to resync after rebuild if still same group
+    if (widget.groupId != null && oldWidget.groupId == widget.groupId) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _ensureSynced());
+    }
+  }
+
+  @override
+  void dispose() {
+    if (widget.groupId != null && _hController != null) {
+      SyncScrollManager.instance.unregister(widget.groupId!, _hController!);
+    }
+    _hController?.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final themeMap = isDark ? atomOneDarkTheme : atomOneLightTheme;
+    final themeMap = isDark
+        ? (() {
+            try {
+              return atomOneDarkTheme;
+            } catch (_) {
+              return _fallbackDarkTheme;
+            }
+          }())
+        : (() {
+            try {
+              return atomOneLightTheme;
+            } catch (_) {
+              return _fallbackLightTheme;
+            }
+          }());
     final codeStyle = TextStyle(
       fontFamilyFallback: const [
         'MapleMono',
@@ -346,66 +485,183 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
       color: (isDark ? Colors.white : Colors.black87),
     );
 
+    // Determine border radius based on position
+    BorderRadius? borderRadius;
+    if (widget.showTopRounding && widget.showBottomRounding) {
+      // Single block or only block
+      borderRadius = BorderRadius.circular(6);
+    } else if (widget.showTopRounding) {
+      // First block in group
+      borderRadius = const BorderRadius.only(
+        topLeft: Radius.circular(6),
+        topRight: Radius.circular(6),
+      );
+    } else if (widget.showBottomRounding) {
+      // Last block in group
+      borderRadius = const BorderRadius.only(
+        bottomLeft: Radius.circular(6),
+        bottomRight: Radius.circular(6),
+      );
+    } else {
+      // Middle block - no rounding
+      borderRadius = BorderRadius.zero;
+    }
+
+    // Determine border - middle blocks only have left/right borders
+    Border? border = Border(
+      left: BorderSide(color: Colors.grey.withAlpha(80)),
+      right: BorderSide(color: Colors.grey.withAlpha(80)),
+      top: widget.showTopRounding
+          ? BorderSide(color: Colors.grey.withAlpha(80))
+          : BorderSide.none,
+      bottom: widget.showBottomRounding
+          ? BorderSide(color: Colors.grey.withAlpha(80))
+          : BorderSide.none,
+    );
+
+    _measureIfNeeded(codeStyle);
+    final contentWidth = _groupLineWidth;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => _ensureSynced());
+
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(top: 8),
+      // Remove margin for grouped blocks
+      margin: EdgeInsets.zero,
       decoration: BoxDecoration(
         color: Colors.grey.withAlpha(40),
-        border: Border.all(color: Colors.grey.withAlpha(80)),
-        borderRadius: BorderRadius.circular(6),
+        border: border,
+        borderRadius: borderRadius,
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 6, 4, 2),
-            child: Row(
-              children: [
-                Expanded(
-                  child: SelectionContainer.disabled(
-                    child: Text(
-                      langLabel.isEmpty
-                          ? ''
-                          : langLabel[0].toUpperCase() + langLabel.substring(1),
-                      style: codeStyle.copyWith(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        height: 1,
+          // Only show header for first block in group
+          if (widget.showHeader)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 6, 4, 2),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: SelectionContainer.disabled(
+                      child: Text(
+                        langLabel.isEmpty
+                            ? ''
+                            : langLabel[0].toUpperCase() + langLabel.substring(1),
+                        style: codeStyle.copyWith(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          height: 1,
+                        ),
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                ),
-                IconButton(
-                  tooltip: _copied ? 'Copied' : 'Copy',
-                  onPressed: () async {
-                    await Clipboard.setData(ClipboardData(text: widget.code));
-                    if (mounted) {
-                      setState(() => _copied = true);
-                      Future.delayed(const Duration(milliseconds: 1500), () {
-                        if (mounted) setState(() => _copied = false);
-                      });
-                    }
-                  },
-                  icon: Icon(_copied ? Icons.check : Icons.copy, size: 14),
-                  padding: const EdgeInsets.all(4),
-                  constraints: const BoxConstraints(),
-                  color: codeStyle.color,
-                  splashRadius: 14,
-                ),
-              ],
+                  IconButton(
+                    tooltip: _copied ? 'Copied' : 'Copy',
+                    onPressed: () async {
+                      // Copy the full code content if available, otherwise copy current block
+                      final textToCopy = widget.fullCodeContent ?? widget.code;
+                      await Clipboard.setData(ClipboardData(text: textToCopy));
+                      if (mounted) {
+                        setState(() => _copied = true);
+                        Future.delayed(const Duration(milliseconds: 1500), () {
+                          if (mounted) setState(() => _copied = false);
+                        });
+                      }
+                    },
+                    icon: Icon(_copied ? Icons.check : Icons.copy, size: 14),
+                    padding: const EdgeInsets.all(4),
+                    constraints: const BoxConstraints(),
+                    color: codeStyle.color,
+                    splashRadius: 14,
+                  ),
+                ],
+              ),
             ),
-          ),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
+            physics: const NoOverscrollPhysics(),
+            controller: _hController,
+            key: widget.groupId != null && widget.groupIndex != null
+                ? PageStorageKey('code-h-${widget.groupId}-${widget.groupIndex}')
+                : null,
             primary: false,
-            
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-            child: Text.rich(
-              TextSpan(style: codeStyle, children: _toTextSpans(_nodes, themeMap)),
-            ),
+            padding: EdgeInsets.fromLTRB(12, 0, 12, widget.showBottomRounding ? 10 : 0),
+            child: contentWidth != null
+                ? ConstrainedBox(
+                    constraints: BoxConstraints(minWidth: contentWidth + 1),
+                    child: Text.rich(
+                      TextSpan(
+                        style: codeStyle,
+                        children: () {
+                          final spans = _tokensToSpans(_tokens, themeMap);
+                          // Append an invisible trailing newline so outer SelectionArea copies a line break
+                          // without introducing visible vertical space between grouped blocks.
+                          if (!widget.code.endsWith('\n')) {
+                            spans.add(
+                              TextSpan(
+                                text: '\n ',
+                                style: codeStyle.copyWith(
+                                  fontSize: 0.1, // effectively zero-height
+                                  height: 0.1,
+                                  color: Colors.transparent,
+                                ),
+                              ),
+                            );
+                          } else {
+                            // If original already ends with newline, still ensure it's invisible & no extra space
+                            // by adding a zero-sized span (no text) to avoid layout changes.
+                            spans.add(
+                              TextSpan(
+                                text: '',
+                                style: codeStyle.copyWith(
+                                  fontSize: 0.1,
+                                  height: 0.1,
+                                  color: Colors.transparent,
+                                ),
+                              ),
+                            );
+                          }
+                          return spans;
+                        }(),
+                      ),
+                    ),
+                  )
+                : Text.rich(
+                    TextSpan(
+                      style: codeStyle,
+                      children: () {
+                        final spans = _tokensToSpans(_tokens, themeMap);
+                        if (!widget.code.endsWith('\n')) {
+                          spans.add(
+                            TextSpan(
+                              text: '\n ',
+                              style: codeStyle.copyWith(
+                                fontSize: 0.1,
+                                height: 0.1,
+                                color: Colors.transparent,
+                              ),
+                            ),
+                          );
+                        } else {
+                          spans.add(
+                            TextSpan(
+                              text: '',
+                              style: codeStyle.copyWith(
+                                fontSize: 0.1,
+                                height: 0.1,
+                                color: Colors.transparent,
+                              ),
+                            ),
+                          );
+                        }
+                        return spans;
+                      }(),
+                    ),
+                  ),
           ),
         ],
       ),

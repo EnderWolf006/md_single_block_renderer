@@ -39,7 +39,7 @@ build:
   <Question>
     怎么把markdown字符串拆成块？
   </Question>
-  <Answer1>
+  <Answer>
     首先使用markdown库中的Document把markdown字符串转换为AST对象列表（列表根节点都是块级标签）。
     然后递归把AST对象列表展平（因为可能存在嵌套块级标签），把原来的AST树结构转换为List<Block>，
     List其中每个Block都是原AST树的叶子节点，把该叶子节点的root-to-leaf path（List<Block>）作为属性记录下来。

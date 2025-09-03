@@ -3,6 +3,19 @@ import 'package:markdown/markdown.dart' as md;
 import 'extension_syntaxes/math_syntax.dart';
 import 'extension_syntaxes/footnote_syntax.dart';
 import 'package:flutter/foundation.dart';
+import 'package:highlight/highlight.dart' as hl;
+
+/// Lightweight representation of highlighted code after parsing.
+/// Each token stores the raw text along with an optional highlight className.
+class CodeToken {
+  final String text;
+  final String? className; // highlight class (e.g. 'keyword', 'string')
+  const CodeToken(this.text, this.className);
+
+  Map<String, Object?> toJson() => {'t': text, if (className != null) 'c': className};
+  static CodeToken fromJson(Map<String, Object?> m) =>
+      CodeToken(m['t'] as String? ?? '', m['c'] as String?);
+}
 
 /// Represents one leaf block extracted from the markdown AST.
 /// A leaf block is a block level node that has no block children (only inline
@@ -41,6 +54,8 @@ class Block {
   final String? math; // for block math (between $$ $$)
   final String? footnoteId; // for footnote definition or reference
   final bool isFootnoteDefinition;
+  final List<CodeToken>?
+  codeTokens; // precomputed highlighted code tokens (for code blocks)
 
   const Block({
     required this.id,
@@ -55,6 +70,7 @@ class Block {
     this.math,
     this.footnoteId,
     this.isFootnoteDefinition = false,
+    this.codeTokens,
   });
 
   @override
@@ -252,20 +268,67 @@ List<Block> markdownToBlocks(String markdownSource) {
             (e) => e.tag == 'code',
             orElse: () => md.Element.text('code', ''),
           );
-          blocks.add(
-            Block(
-              id: 'b${autoId++}',
-              path: newPath,
-              blockTag: 'code',
-              inlines: const [],
-              rawCode: codeEl.textContent,
-              codeLanguage: codeEl.attributes['class']?.replaceFirst('language-', ''),
-              isCodeBlock: true,
-              math: null,
-              footnoteId: null,
-              isFootnoteDefinition: false,
-            ),
-          );
+
+          // Split code content into chunks of 8 lines each
+          final codeContent = codeEl.textContent;
+          final codeLanguage = codeEl.attributes['class']?.replaceFirst('language-', '');
+
+          // Split into lines and remove trailing empty lines to avoid counting them
+          var lines = codeContent.split('\n');
+          while (lines.isNotEmpty && lines.last.isEmpty) {
+            lines.removeLast();
+          }
+
+          // Calculate total number of blocks needed
+          final totalBlocks = (lines.length / 8).ceil();
+          final codeBlockGroupId = 'codeGroup$autoId';
+
+          // Store the full original code content for copy functionality
+          final fullCodeContent = lines.join('\n');
+          // Precompute longest line (raw text) to avoid measuring all lines in widget
+          String longestLine = '';
+          for (final l in lines) {
+            if (l.length > longestLine.length) longestLine = l;
+          }
+
+          // Create blocks for each chunk of 8 lines
+          for (int i = 0; i < lines.length; i += 8) {
+            final endIndex = (i + 8 < lines.length) ? i + 8 : lines.length;
+            final chunkLines = lines.sublist(i, endIndex);
+            final chunkContent = chunkLines.join('\n');
+            final blockIndex = i ~/ 8;
+
+            // Determine position in the group
+            final isFirst = blockIndex == 0;
+            final isLast = blockIndex == totalBlocks - 1;
+            final isMiddle = !isFirst && !isLast;
+
+            blocks.add(
+              Block(
+                id: 'b${autoId++}',
+                path: newPath,
+                blockTag: 'code',
+                inlines: const [],
+                rawCode: chunkContent,
+                codeLanguage: codeLanguage,
+                isCodeBlock: true,
+                codeTokens: _buildCodeTokens(chunkContent, codeLanguage),
+                meta: {
+                  'codeBlockGroupId': codeBlockGroupId,
+                  'isFirstInGroup': isFirst,
+                  'isLastInGroup': isLast,
+                  'isMiddleInGroup': isMiddle,
+                  'blockIndex': blockIndex,
+                  'totalBlocks': totalBlocks,
+                  'fullCodeContent': fullCodeContent,
+                  'fullCodeLongestLine': longestLine,
+                },
+                math: null,
+                footnoteId: null,
+                isFootnoteDefinition: false,
+              ),
+            );
+          }
         } else if (tag == 'hr') {
           blocks.add(
             Block(
@@ -276,6 +339,7 @@ List<Block> markdownToBlocks(String markdownSource) {
               rawCode: null,
               codeLanguage: null,
               isCodeBlock: false,
+              codeTokens: null,
               math: null,
               footnoteId: null,
               isFootnoteDefinition: false,
@@ -300,6 +364,7 @@ List<Block> markdownToBlocks(String markdownSource) {
               math: null,
               footnoteId: null,
               isFootnoteDefinition: false,
+              codeTokens: null,
             ),
           );
         }
@@ -321,6 +386,7 @@ List<Block> markdownToBlocks(String markdownSource) {
             math: null,
             footnoteId: null,
             isFootnoteDefinition: false,
+            codeTokens: null,
           ),
         );
       }
@@ -329,6 +395,59 @@ List<Block> markdownToBlocks(String markdownSource) {
 
   for (final root in nodes) visit(root, []);
   return blocks;
+}
+
+/// Highlight code into tokens using highlight package. Falls back to plain text token list.
+List<CodeToken> _buildCodeTokens(String code, String? language) {
+  final lang = (language ?? '').trim();
+  String normalize(String input) {
+    final l = input.toLowerCase();
+    switch (l) {
+      case 'js':
+        return 'javascript';
+      case 'ts':
+        return 'typescript';
+      case 'py':
+        return 'python';
+      case 'c++':
+        return 'cpp';
+      case 'sh':
+        return 'bash';
+      case 'md':
+      case 'markdown':
+        return 'markdown';
+      case 'yml':
+        return 'yaml';
+      default:
+        return l;
+    }
+  }
+
+  try {
+    final res = hl.highlight.parse(
+      code.trimRight(),
+      language: lang.isEmpty ? null : normalize(lang),
+    );
+    final out = <CodeToken>[];
+    void walk(hl.Node n, [String? parentClass]) {
+      final cls = n.className ?? parentClass;
+      if (n.value != null) {
+        out.add(CodeToken(n.value!, cls));
+      } else if (n.children != null) {
+        for (final c in n.children!) {
+          walk(c, cls);
+        }
+      }
+    }
+
+    for (final n in res.nodes ?? const <hl.Node>[]) {
+      walk(n);
+    }
+    if (out.isEmpty) return [CodeToken(code, null)];
+    return out;
+  } catch (_) {
+    return [CodeToken(code, null)];
+  }
 }
 
 /// Serialize a list of Blocks to JSON-safe structure (for isolate transfer)
@@ -340,6 +459,8 @@ List<Map<String, Object?>> _blocksToJson(List<Block> blocks) => blocks
         'isCodeBlock': b.isCodeBlock,
         'rawCode': b.rawCode,
         'codeLanguage': b.codeLanguage,
+        if (b.codeTokens != null)
+          'codeTok': b.codeTokens!.map((t) => t.toJson()).toList(),
         if (b.meta != null) 'meta': b.meta,
         'path': b.path
             .map(
@@ -401,6 +522,9 @@ Block _blockFromJson(Map<String, Object?> m) => Block(
   math: m['math'] as String?,
   footnoteId: m['footnoteId'] as String?,
   isFootnoteDefinition: (m['footDef'] as bool?) ?? false,
+  codeTokens: (m['codeTok'] as List?)
+      ?.map((e) => CodeToken.fromJson((e as Map).cast<String, Object?>()))
+      .toList(),
 );
 
 /// Top-level entry for compute (must be a top-level or static function).
