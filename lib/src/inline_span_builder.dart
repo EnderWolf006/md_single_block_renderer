@@ -16,6 +16,19 @@ class InlineSpanBuilderContext {
 class InlineSpanBuilder {
   final InlineSpanBuilderContext ctx;
   InlineSpanBuilder(this.ctx);
+  // Keep recognizers alive for the lifetime of this builder instance so that
+  // link taps work reliably when spans are rebuilt. Otherwise creating a new
+  // TapGestureRecognizer each build without holding a reference can lead to
+  // it being disposed early by the framework's gesture arena when the
+  // TextSpan tree is replaced.
+  final List<TapGestureRecognizer> _linkRecognizers = [];
+
+  void dispose() {
+    for (final r in _linkRecognizers) {
+      r.dispose();
+    }
+    _linkRecognizers.clear();
+  }
 
   TextSpan build(List<BlockInlineNode> nodes) {
     return TextSpan(style: ctx.baseStyle, children: nodes.map(_convert).toList());
@@ -74,17 +87,31 @@ class InlineSpanBuilder {
         );
       case 'link':
         final url = node.data?['href'] as String?;
+        if (url == null) {
+          return TextSpan(children: node.children.map(_convert).toList());
+        }
+        final recognizer = TapGestureRecognizer()..onTap = () => ctx.onTapLink?.call(url);
+        _linkRecognizers.add(recognizer);
+        // Apply link styling to all descendant spans by wrapping them in a parent span.
         return TextSpan(
           style: ctx.baseStyle.merge(
-            const TextStyle(color: Colors.blue, decoration: TextDecoration.underline),
+            const TextStyle(color: Colors.blue),
           ),
-          recognizer: url == null
-              ? null
-              : (TapGestureRecognizer()
-                  ..onTap = () {
-                    ctx.onTapLink?.call(url);
-                  }),
-          children: node.children.map(_convert).toList(),
+          children: node.children.isEmpty
+              ? [TextSpan(text: url, recognizer: recognizer)]
+              : node.children.map((c) {
+                  final converted = _convert(c);
+                  // Only attach recognizer to leaf TextSpans so selection works.
+                  if (converted is TextSpan) {
+                    return TextSpan(
+                      text: converted.text,
+                      style: converted.style,
+                      children: converted.children,
+                      recognizer: recognizer,
+                    );
+                  }
+                  return converted;
+                }).toList(),
         );
       case 'del':
         return TextSpan(
