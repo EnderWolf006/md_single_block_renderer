@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:md_single_block_renderer/src/selectable_adapter.dart';
 import 'block.dart';
 import 'inline_span_builder.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
@@ -148,14 +149,18 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
     final order = block.meta?['order'] as int?;
     final bullet = listType == 'ol' ? '${order ?? 1}.' : '\u2022';
     return Padding(
-      padding: EdgeInsets.only(left: 12.0 * depth + 8, top: 2, bottom: 2),
+      padding: EdgeInsets.only(left: 14.0 * depth - 12, top: 2, bottom: 2),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 32,
-            child: Text(bullet, style: style.copyWith(fontWeight: FontWeight.bold)),
+            width: 28,
+            child: Align(
+              alignment: Alignment.center,
+              child: Text(bullet, style: style.copyWith(fontWeight: FontWeight.bold)),
+            ),
           ),
+          SizedBox(width: 4),
           Expanded(child: Text.rich(span)),
         ],
       ),
@@ -181,7 +186,8 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         color: bg,
         border: Border(bottom: BorderSide(color: borderColor)),
       ),
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      margin: EdgeInsets.only(bottom: 4, top: isHeader ? 4 : 0),
+      padding: EdgeInsets.only(bottom: 4, top: isHeader ? 4 : 0),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -212,23 +218,28 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
 
   Widget _buildMathBlock(BuildContext context) {
     final style = _resolveBaseStyle(context).copyWith(fontSize: 16);
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.symmetric(vertical: 8),
+    return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.grey.withAlpha(40),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: Colors.grey.withAlpha(80)),
-      ),
-      child: Align(
-        alignment: Alignment.center,
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Math.tex(
-            block.math ?? '',
-            mathStyle: MathStyle.display,
-            textStyle: style,
+      child: SelectableAdapter(
+        selectedText: block.math != null ? '\n${block.math}\n' : '\n',
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.grey.withAlpha(40),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: Colors.grey.withAlpha(80)),
+          ),
+          child: Align(
+            alignment: Alignment.center,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Math.tex(
+                block.math ?? '',
+                mathStyle: MathStyle.display,
+                textStyle: style,
+              ),
+            ),
           ),
         ),
       ),
@@ -519,6 +530,11 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
           : BorderSide.none,
     );
 
+    EdgeInsets margin = EdgeInsets.only(
+      top: widget.showTopRounding ? 4 : 0,
+      bottom: widget.showBottomRounding ? 4 : 0,
+    );
+
     _measureIfNeeded(codeStyle);
     final contentWidth = _groupLineWidth;
 
@@ -527,7 +543,7 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
     return Container(
       width: double.infinity,
       // Remove margin for grouped blocks
-      margin: EdgeInsets.zero,
+      margin: margin,
       decoration: BoxDecoration(
         color: Colors.grey.withAlpha(40),
         border: border,
@@ -598,12 +614,11 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
                         style: codeStyle,
                         children: () {
                           final spans = _tokensToSpans(_tokens, themeMap);
-                          // Append an invisible trailing newline so outer SelectionArea copies a line break
-                          // without introducing visible vertical space between grouped blocks.
-                          if (!widget.code.endsWith('\n')) {
-                            spans.add(
+                          if (!widget.showTopRounding) {
+                            spans.insert(
+                              0,
                               TextSpan(
-                                text: '\n ',
+                                text: '\n',
                                 style: codeStyle.copyWith(
                                   fontSize: 0.1, // effectively zero-height
                                   height: 0.1,
@@ -611,20 +626,8 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
                                 ),
                               ),
                             );
-                          } else {
-                            // If original already ends with newline, still ensure it's invisible & no extra space
-                            // by adding a zero-sized span (no text) to avoid layout changes.
-                            spans.add(
-                              TextSpan(
-                                text: '',
-                                style: codeStyle.copyWith(
-                                  fontSize: 0.1,
-                                  height: 0.1,
-                                  color: Colors.transparent,
-                                ),
-                              ),
-                            );
                           }
+
                           return spans;
                         }(),
                       ),

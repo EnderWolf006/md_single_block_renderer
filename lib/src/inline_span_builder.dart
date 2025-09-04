@@ -1,7 +1,9 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:md_single_block_renderer/src/selectable_adapter.dart';
 import 'block.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
+import 'package:extended_image/extended_image.dart';
 
 /// Convert a list of BlockInlineNode (already parsed off the UI thread ideally)
 /// into a TextSpan tree.
@@ -32,6 +34,14 @@ class InlineSpanBuilder {
         return TextSpan(
           style: ctx.baseStyle.merge(const TextStyle(fontWeight: FontWeight.bold)),
           children: node.children.map(_convert).toList(),
+        );
+      case 'image':
+        final src = node.data?['src'] as String? ?? '';
+        final alt = node.data?['alt'] as String? ?? '';
+        // Use a WidgetSpan so images flow inline but can expand vertically.
+        return WidgetSpan(
+          alignment: PlaceholderAlignment.middle,
+          child: _ImageView(imageUrl: src, alt: alt, baseStyle: ctx.baseStyle),
         );
       case 'code':
         return WidgetSpan(
@@ -89,14 +99,19 @@ class InlineSpanBuilder {
         final processed = _preprocessMath(raw);
         return WidgetSpan(
           alignment: PlaceholderAlignment.middle,
-          child: Math.tex(
-            processed,
-            mathStyle: MathStyle.text,
-            textStyle: ctx.baseStyle,
-            onErrorFallback: (err) => Text(
-              err.message,
-              style: ctx.baseStyle.merge(
-                const TextStyle(color: Colors.red, fontSize: 11),
+          child: SelectableAdapter(
+            selectedText: ' $processed ',
+            child: SizedBox(
+              child: Math.tex(
+                processed,
+                mathStyle: MathStyle.text,
+                textStyle: ctx.baseStyle,
+                onErrorFallback: (err) => Text(
+                  err.message,
+                  style: ctx.baseStyle.merge(
+                    const TextStyle(color: Colors.red, fontSize: 11),
+                  ),
+                ),
               ),
             ),
           ),
@@ -121,6 +136,70 @@ class InlineSpanBuilder {
       default:
         return TextSpan(children: node.children.map(_convert).toList());
     }
+  }
+}
+
+/// Simple image view used for inline markdown images. Provides basic loading,
+/// error, and alt-text fallback. Height is capped for layout safety.
+class _ImageView extends StatelessWidget {
+  final String imageUrl;
+  final String alt;
+  final TextStyle baseStyle;
+  const _ImageView({required this.imageUrl, required this.alt, required this.baseStyle});
+
+  @override
+  Widget build(BuildContext context) {
+    if (imageUrl.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+        child: Text(alt, style: baseStyle.copyWith(fontStyle: FontStyle.italic)),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+      child: SelectableAdapter(
+        selectedText: '\n[$alt]($imageUrl)\n',
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: ExtendedImage.network(
+            imageUrl,
+            height: 240,
+            fit: BoxFit.contain,
+            cache: true,
+            loadStateChanged: (state) {
+              switch (state.extendedImageLoadState) {
+                case LoadState.loading:
+                  return Container(
+                    width: 240,
+                    height: 240,
+                    alignment: Alignment.center,
+                    color: Colors.grey.withAlpha(30),
+                    child: const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  );
+                case LoadState.completed:
+                  return null; // default rendering
+                case LoadState.failed:
+                  return Container(
+                    width: 240,
+                    height: 240,
+                    alignment: Alignment.center,
+                    color: Colors.grey.withAlpha(30),
+                    child: Icon(
+                      Icons.broken_image,
+                      size: 40,
+                      color: Theme.of(context).colorScheme.onSurface.withOpacity(.6),
+                    ),
+                  );
+              }
+            },
+          ),
+        ),
+      ),
+    );
   }
 }
 
