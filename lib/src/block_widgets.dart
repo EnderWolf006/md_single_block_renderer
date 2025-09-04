@@ -30,6 +30,28 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
     return baseTextStyle ?? DefaultTextStyle.of(context).style.copyWith(fontSize: 14);
   }
 
+  // Inject an invisible leading newline for every block except the first one (blockIndex > 0)
+  // so that selection & copy between blocks preserves separation without visibly altering layout.
+  TextSpan _maybePrependHiddenNewline(TextSpan span, TextStyle baseStyle) {
+    // Prefer globalIndex (unique across all blocks). Fallback to blockIndex for legacy code blocks.
+    final idx =
+        block.meta?['globalIndex'] as int? ?? block.meta?['blockIndex'] as int? ?? 0;
+    if (idx <= 0) return span; // first block => no prefix
+    return TextSpan(
+      children: [
+        TextSpan(
+          text: '\n',
+          style: baseStyle.copyWith(
+            fontSize: 0.1,
+            height: 0.1,
+            color: Colors.transparent,
+          ),
+        ),
+        span,
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (block.isCodeBlock) {
@@ -67,7 +89,7 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         InlineSpanBuilder(
           InlineSpanBuilderContext(baseStyle: style, onTapLink: onTapLink),
         );
-    final span = spanBuilder.build(block.inlines);
+    final span = _maybePrependHiddenNewline(spanBuilder.build(block.inlines), style);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Text.rich(span),
@@ -84,7 +106,7 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         InlineSpanBuilder(
           InlineSpanBuilderContext(baseStyle: style, onTapLink: onTapLink),
         );
-    final span = spanBuilder.build(block.inlines);
+    final span = _maybePrependHiddenNewline(spanBuilder.build(block.inlines), style);
     return Padding(
       padding: const EdgeInsets.only(top: 12, bottom: 4),
       child: Text.rich(span),
@@ -99,7 +121,7 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         InlineSpanBuilder(
           InlineSpanBuilderContext(baseStyle: style, onTapLink: onTapLink),
         );
-    final span = spanBuilder.build(block.inlines);
+    final span = _maybePrependHiddenNewline(spanBuilder.build(block.inlines), style);
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
@@ -143,11 +165,18 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         InlineSpanBuilder(
           InlineSpanBuilderContext(baseStyle: style, onTapLink: onTapLink),
         );
+    // For list items, we only add the hidden newline before the bullet (implemented below),
+    // not before the content span itself (to avoid an extra blank line after the number).
     final span = spanBuilder.build(block.inlines);
     final listType = block.meta?['listType'] as String? ?? 'ul';
     final depth = (block.meta?['depth'] as int? ?? 0).clamp(0, 10);
     final order = block.meta?['order'] as int?;
     final bullet = listType == 'ol' ? '${order ?? 1}.' : '\u2022';
+    final globalIndex = block.meta?['globalIndex'] as int? ?? 0;
+    TextSpan _hiddenNL(TextStyle s) => TextSpan(
+      text: '\n',
+      style: s.copyWith(fontSize: 0.1, height: 0.1, color: Colors.transparent),
+    );
     return Padding(
       padding: EdgeInsets.only(left: 14.0 * depth - 12, top: 2, bottom: 2),
       child: Row(
@@ -157,7 +186,15 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
             width: 28,
             child: Align(
               alignment: Alignment.center,
-              child: Text(bullet, style: style.copyWith(fontWeight: FontWeight.bold)),
+              child: Text.rich(
+                TextSpan(
+                  style: style.copyWith(fontWeight: FontWeight.bold),
+                  children: [
+                    if (globalIndex > 0) _hiddenNL(style),
+                    TextSpan(text: bullet),
+                  ],
+                ),
+              ),
             ),
           ),
           SizedBox(width: 4),
@@ -181,6 +218,7 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
     final cellAlign =
         (block.meta?['cellAlign'] as List?)?.cast<String>() ??
         List.filled(cells.length, 'left');
+    final blockIdx = block.meta?['blockIndex'] as int? ?? 0;
     return Container(
       decoration: BoxDecoration(
         color: bg,
@@ -196,7 +234,25 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 6),
                 child: Text.rich(
-                  spanBuilder.build(cells[i]),
+                  () {
+                    final cellSpan = spanBuilder.build(cells[i]);
+                    if (i == 0 && blockIdx > 0) {
+                      return TextSpan(
+                        children: [
+                          TextSpan(
+                            text: '\n',
+                            style: base.copyWith(
+                              fontSize: 0.1,
+                              height: 0.1,
+                              color: Colors.transparent,
+                            ),
+                          ),
+                          cellSpan,
+                        ],
+                      );
+                    }
+                    return cellSpan;
+                  }(),
                   textAlign: () {
                     switch (cellAlign[i]) {
                       case 'center':
@@ -218,10 +274,12 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
 
   Widget _buildMathBlock(BuildContext context) {
     final style = _resolveBaseStyle(context).copyWith(fontSize: 16);
+    final idx =
+        block.meta?['globalIndex'] as int? ?? block.meta?['blockIndex'] as int? ?? 0;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: SelectableAdapter(
-        selectedText: block.math != null ? '\n${block.math}\n' : '\n',
+        selectedText: block.math != null ? '\n${block.math}' : '\n',
         child: Container(
           width: double.infinity,
           padding: const EdgeInsets.symmetric(vertical: 8),
@@ -235,7 +293,8 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Math.tex(
-                block.math ?? '',
+                // Prepend hidden newline for selection (blockIndex > 0) using zero-sized style.
+                idx > 0 ? '\n${block.math ?? ''}' : (block.math ?? ''),
                 mathStyle: MathStyle.display,
                 textStyle: style,
               ),
@@ -253,7 +312,7 @@ class MarkdownSingleBlockRenderer extends StatelessWidget {
         InlineSpanBuilder(
           InlineSpanBuilderContext(baseStyle: style, onTapLink: onTapLink),
         );
-    final span = spanBuilder.build(block.inlines);
+    final span = _maybePrependHiddenNewline(spanBuilder.build(block.inlines), style);
     final label = block.footnoteId ?? '';
     final theme = Theme.of(context);
     return Padding(
@@ -614,13 +673,26 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
                         style: codeStyle,
                         children: () {
                           final spans = _tokensToSpans(_tokens, themeMap);
-                          if (!widget.showTopRounding) {
+                          final isFirstOverall = (widget.groupIndex ?? 0) == 0;
+                          if (!isFirstOverall && widget.showTopRounding) {
                             spans.insert(
                               0,
                               TextSpan(
                                 text: '\n',
                                 style: codeStyle.copyWith(
-                                  fontSize: 0.1, // effectively zero-height
+                                  fontSize: 0.1,
+                                  height: 0.1,
+                                  color: Colors.transparent,
+                                ),
+                              ),
+                            );
+                          } else if (!widget.showTopRounding) {
+                            spans.insert(
+                              0,
+                              TextSpan(
+                                text: '\n',
+                                style: codeStyle.copyWith(
+                                  fontSize: 0.1,
                                   height: 0.1,
                                   color: Colors.transparent,
                                 ),
@@ -638,6 +710,32 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
                       style: codeStyle,
                       children: () {
                         final spans = _tokensToSpans(_tokens, themeMap);
+                        final isFirstOverall = (widget.groupIndex ?? 0) == 0;
+                        if (!isFirstOverall && widget.showTopRounding) {
+                          spans.insert(
+                            0,
+                            TextSpan(
+                              text: '\n',
+                              style: codeStyle.copyWith(
+                                fontSize: 0.1,
+                                height: 0.1,
+                                color: Colors.transparent,
+                              ),
+                            ),
+                          );
+                        } else if (!widget.showTopRounding) {
+                          spans.insert(
+                            0,
+                            TextSpan(
+                              text: '\n',
+                              style: codeStyle.copyWith(
+                                fontSize: 0.1,
+                                height: 0.1,
+                                color: Colors.transparent,
+                              ),
+                            ),
+                          );
+                        }
                         if (!widget.code.endsWith('\n')) {
                           spans.add(
                             TextSpan(

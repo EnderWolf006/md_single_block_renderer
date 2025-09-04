@@ -89,6 +89,7 @@ List<Block> markdownToBlocks(String markdownSource) {
   final nodes = doc.parseLines(markdownSource.split('\n'));
   final blocks = <Block>[];
   int autoId = 0;
+  int globalIndex = 0; // monotonically increasing index across ALL emitted blocks
   final List<int?> _listStack = []; // null for unordered, int counter for ordered
 
   void visit(md.Node node, List<BlockPathEntry> path) {
@@ -149,6 +150,7 @@ List<Block> markdownToBlocks(String markdownSource) {
               'listType': listType,
               if (order != null) 'order': order,
               'depth': path.where((p) => p.tag == 'ul' || p.tag == 'ol').length,
+              'globalIndex': globalIndex++,
             },
             math: null,
           ),
@@ -315,6 +317,7 @@ List<Block> markdownToBlocks(String markdownSource) {
                 codeTokens: _buildCodeTokens(chunkContent, codeLanguage),
                 meta: {
                   'codeBlockGroupId': codeBlockGroupId,
+                  'globalIndex': globalIndex++,
                   'isFirstInGroup': isFirst,
                   'isLastInGroup': isLast,
                   'isMiddleInGroup': isMiddle,
@@ -335,6 +338,7 @@ List<Block> markdownToBlocks(String markdownSource) {
               id: 'b${autoId++}',
               path: newPath,
               blockTag: tag,
+              meta: {'globalIndex': globalIndex++},
               inlines: const [],
               rawCode: null,
               codeLanguage: null,
@@ -365,6 +369,7 @@ List<Block> markdownToBlocks(String markdownSource) {
               footnoteId: null,
               isFootnoteDefinition: false,
               codeTokens: null,
+              meta: {'globalIndex': globalIndex++},
             ),
           );
         }
@@ -387,6 +392,7 @@ List<Block> markdownToBlocks(String markdownSource) {
             footnoteId: null,
             isFootnoteDefinition: false,
             codeTokens: null,
+            meta: {'globalIndex': globalIndex++},
           ),
         );
       }

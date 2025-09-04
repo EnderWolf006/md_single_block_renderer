@@ -185,7 +185,7 @@ class _ImageView extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
       child: SelectableAdapter(
-        selectedText: '\n[$alt]($imageUrl)\n',
+        selectedText: '\n[$alt]($imageUrl)',
         child: ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: ExtendedImage.network(
