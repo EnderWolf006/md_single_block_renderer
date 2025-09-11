@@ -381,12 +381,14 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
   ScrollController? _hController; // horizontal scroll controller
   double? _groupLineWidth; // cached unified width
   bool _measured = false;
+  bool _isListening = false; // track if we're listening to width changes
 
   @override
   void initState() {
     super.initState();
     _initTokens();
     _maybeInitScrollSync();
+    _maybeInitWidthListener();
   }
 
   void _maybeInitScrollSync() {
@@ -397,6 +399,35 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
       if (!mounted) return;
       SyncScrollManager.instance.register(widget.groupId!, _hController!);
     });
+  }
+
+  void _maybeInitWidthListener() {
+    final groupId = widget.groupId;
+    if (groupId == null || _isListening) return;
+
+    _isListening = true;
+    CodeWidthManager.instance.addGroupListener(groupId, _onGroupWidthChanged);
+
+    // Get the current group width if available
+    final currentWidth = CodeWidthManager.instance.getGroupWidth(groupId);
+    if (currentWidth != null) {
+      _groupLineWidth = currentWidth;
+      _measured = true;
+    }
+  }
+
+  void _onGroupWidthChanged() {
+    if (!mounted) return;
+    final groupId = widget.groupId;
+    if (groupId == null) return;
+
+    final newWidth = CodeWidthManager.instance.getGroupWidth(groupId);
+    if (newWidth != _groupLineWidth) {
+      setState(() {
+        _groupLineWidth = newWidth;
+        _measured = newWidth != null;
+      });
+    }
   }
 
   void _initTokens() {
@@ -440,39 +471,80 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
   }
 
   void _measureIfNeeded(TextStyle codeStyle) {
-    if (_measured) return;
     final groupId = widget.groupId;
     if (groupId == null) return;
+
+    // If we already have a group width, use it
     final existing = CodeWidthManager.instance.getGroupWidth(groupId);
-    if (existing != null) {
+    if (existing != null && _measured) {
       _groupLineWidth = existing;
-      _measured = true;
       return;
     }
+
     final longest = widget.precomputedLongestLine;
     if (longest == null) {
       _measured = true; // nothing to do
       return;
     }
+
     // Defer actual layout cost to post-frame to avoid blocking first paint
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final tp = TextPainter(textDirection: TextDirection.ltr, maxLines: 1);
-      tp.text = TextSpan(text: longest.isEmpty ? ' ' : longest, style: codeStyle);
-      tp.layout();
-      final w = tp.width;
-      if (CodeWidthManager.instance.updateWidth(groupId, w)) {
-        if (mounted) {
-          setState(() {
-            _groupLineWidth = w;
-            _measured = true;
-          });
-        }
-      } else {
-        _groupLineWidth = CodeWidthManager.instance.getGroupWidth(groupId);
-        _measured = true;
-      }
+      _measureAndUpdateWidth(longest, codeStyle, groupId);
     });
+  }
+
+  void _measureAndUpdateWidth(String longest, TextStyle codeStyle, String groupId) {
+    final tp = TextPainter(textDirection: TextDirection.ltr, maxLines: 1);
+    tp.text = TextSpan(text: longest.isEmpty ? ' ' : longest, style: codeStyle);
+    tp.layout();
+    final w = tp.width;
+
+    if (CodeWidthManager.instance.updateWidth(groupId, w)) {
+      // Width was updated, the listener will handle the setState
+      if (mounted && !_measured) {
+        setState(() {
+          _measured = true;
+        });
+      }
+    } else {
+      // Width didn't change, but ensure we're synced
+      if (mounted && !_measured) {
+        setState(() {
+          _groupLineWidth = CodeWidthManager.instance.getGroupWidth(groupId);
+          _measured = true;
+        });
+      }
+    }
+  }
+
+  /// Force remeasure this block's content and update the group width if needed
+  void remeasure() {
+    final groupId = widget.groupId;
+    if (groupId == null) return;
+
+    final longest = widget.precomputedLongestLine;
+    if (longest == null) return;
+
+    final codeStyle = _getCurrentCodeStyle();
+    _measureAndUpdateWidth(longest, codeStyle, groupId);
+  }
+
+  TextStyle _getCurrentCodeStyle() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return TextStyle(
+      fontFamilyFallback: const [
+        'MapleMono',
+        'Menlo',
+        'Consolas',
+        'Roboto Mono',
+        'Courier New',
+        'monospace',
+      ],
+      fontSize: 13,
+      height: 1.4,
+      color: (isDark ? Colors.white : Colors.black87),
+    );
   }
 
   void _ensureSynced() {
@@ -490,24 +562,61 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
   @override
   void didUpdateWidget(covariant _HighlightedCodeBlock oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.code != widget.code ||
+
+    // Check if code content changed
+    bool codeChanged =
+        oldWidget.code != widget.code ||
         oldWidget.language != widget.language ||
-        oldWidget.tokens != widget.tokens) {
+        oldWidget.tokens != widget.tokens ||
+        oldWidget.precomputedLongestLine != widget.precomputedLongestLine;
+
+    if (codeChanged) {
       _initTokens();
+      _measured = false; // Force remeasurement
+
+      // If the longest line changed, trigger remeasurement
+      if (oldWidget.precomputedLongestLine != widget.precomputedLongestLine) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            remeasure();
+          }
+        });
+      }
     }
+
+    // Handle group ID changes
     if (oldWidget.groupId != widget.groupId) {
-      // group changed: unregister old, register new
+      // Remove listener from old group
+      if (oldWidget.groupId != null && _isListening) {
+        CodeWidthManager.instance.removeGroupListener(
+          oldWidget.groupId!,
+          _onGroupWidthChanged,
+        );
+        _isListening = false;
+      }
+
+      // Unregister from scroll sync
       if (oldWidget.groupId != null && _hController != null) {
         SyncScrollManager.instance.unregister(oldWidget.groupId!, _hController!);
       }
+
+      // Register with new group
       if (widget.groupId != null) {
         _hController ??= ScrollController();
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
           SyncScrollManager.instance.register(widget.groupId!, _hController!);
         });
+
+        // Add listener to new group
+        _maybeInitWidthListener();
       }
+
+      // Reset measurement state for new group
+      _measured = false;
+      _groupLineWidth = null;
     }
+
     // Always attempt to resync after rebuild if still same group
     if (widget.groupId != null && oldWidget.groupId == widget.groupId) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _ensureSynced());
@@ -516,9 +625,19 @@ class _HighlightedCodeBlockState extends State<_HighlightedCodeBlock> {
 
   @override
   void dispose() {
+    // Remove width change listener
+    if (widget.groupId != null && _isListening) {
+      CodeWidthManager.instance.removeGroupListener(
+        widget.groupId!,
+        _onGroupWidthChanged,
+      );
+    }
+
+    // Unregister from scroll sync
     if (widget.groupId != null && _hController != null) {
       SyncScrollManager.instance.unregister(widget.groupId!, _hController!);
     }
+
     _hController?.dispose();
     super.dispose();
   }

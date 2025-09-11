@@ -75,7 +75,7 @@ class Block {
 
   @override
   String toString() =>
-      'Block(tag: $blockTag, meta: $meta, path: ${path.map((e) => e.tag).join('>')})';
+      'Block(tag: $blockTag, path: ${path.map((e) => e.tag).join('>')})';
 }
 
 /// Convert markdown string into list of leaf [Block]s.
